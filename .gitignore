@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+results/
+*.mp4
+*.wav
+*.npz
+manifest.jsonl
+features.jsonl
