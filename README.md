@@ -1,81 +1,57 @@
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)] [![GitHub stars](https://img.shields.io/github/stars/habib-analyst/synsync-bench.svg)]
+
 # SynSync-Bench
 
-[![ci](https://github.com/habib-analyst/synsync-bench/actions/workflows/ci.yml/badge.svg)](https://github.com/habib-analyst/synsync-bench/actions/workflows/ci.yml)
-![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
+Controlled A/V manipulation benchmark with exact ground-truth sync offsets.
 
-A **controlled audio-visual manipulation benchmark** with **exact ground-truth sync offsets** (known by construction, never estimated), plus a **classical + learned fusion detector** for deepfake triage.
+Deepfake detectors are usually evaluated within-dataset, where they silently overfit to one manipulation family. SynSync-Bench generates A/V manipulations programmatically — desync, clock drift, re-encode chains, frame-rate conversion, lip-sync jitter — so ground truth is exact by construction, and evaluates detectors on **held-out manipulation families** (the honest analog of cross-dataset testing).
 
-**The problem it solves.** Deepfake detectors are usually evaluated within-dataset, where they silently overfit to one manipulation family. SynSync-Bench generates A/V manipulations programmatically — desync, clock drift, re-encode chains, frame-rate conversion, lip-sync jitter — so ground truth is exact, and evaluates detectors on **held-out manipulation families** (the honest analog of cross-dataset testing).
-
-**The finding.** A cheap logistic fusion of two classical signal families — A/V desync lag and spectral compression artifacts — beats either family alone, including on manipulation types never seen in training.
-
-```
-┌──────────────┐    ┌─────────────────────┐    ┌──────────────────┐
-│ synthetic    │    │  feature extraction │    │  logistic fusion │
-│ talker       │───▶│  • desync lag/drift │───▶│  8 features      │──▶ manipulated?
-│ (ffmpeg A/V  │    │  • spectral: blocki-│    │  P(manipulated)  │
-│  manipula-   │    │    ness, HF-ratio,  │    │                  │
-│  tions)      │    │    blur, noise      │    │                  │
-└──────────────�ulcorner    └─────────────────────┘    └──────────────────┘
-```
-
-## Quickstart (< 5 min)
+## Quickstart
 
 ```bash
+git clone https://github.com/habib-analyst/synsync-bench.git && cd synsync-bench
 pip install -r requirements.txt   # needs ffmpeg on PATH
-# 1. generate the benchmark (default: 600 clips, ~25 min CPU)
-synsync-bench generate --out bench/
-# 2. extract features
-synsync-bench features bench/
-# 3. train fusion + run all eval protocols
-synsync-bench evaluate bench/ --out results/
-# single-clip triage
-synsync-bench analyze clip.mp4 clip.wav
+
+synsync-bench generate --out bench/       # build the benchmark
+# plan: 600 clips
+# manifest: bench/manifest.jsonl
+
+synsync-bench features bench/             # extract 8 features per clip
+# done: 600 new feature rows
+
+synsync-bench evaluate bench/ --out results/   # train fusion + run all eval protocols
+# prints per-protocol AUCs, then: full results: results/results.json
 ```
 
-## Benchmark design
+Single-clip triage dumps the 8 features as JSON: `synsync-bench analyze clip.mp4 clip.wav`.
 
-| Manipulation | Params | Ground truth | Label |
+## Measured results
+
+600-clip benchmark (100 clean, 200 desync ±40–320 ms, 120 drift ±15–60 ms/s, 80 re-encode, 40 fps-convert, 60 lip-jitter):
+
+| protocol | desync rule | spectral-only | **fusion** |
 |---|---|---|---|
-| `clean` | — | offset 0 | real |
-| `desync` | ±40, ±80, ±160, ±320 ms | exact offset (sample-exact shift) | manipulated |
-| `drift` | ±15, ±30, ±60 ms/s | exact drift rate (resampling) | manipulated |
-| `reencode` | 100k / 300k bitrate | codec artifacts, sync intact | manipulated |
-| `fps_convert` | 25→30→25 round-trip | judder, sync intact | manipulated |
-| `lip_jitter` | 3 jittered mouth segments | visual-only | manipulated |
+| in-family 5-fold CV (AUC) | 0.64 | 0.62 | **0.98** |
+| cross-family A→B (AUC) | 0.59 | 0.60 | **0.84** |
+| cross-family B→A (AUC) | 0.68 | 0.66 | **0.92** |
 
-Source material is a synthetic "talker": mouth openness follows a speech-like amplitude contour that also modulates the audio — strongly correlated A/V like real speech, fully deterministic per seed. Every clip ships in `manifest.jsonl` with its exact parameters.
+Cross-family = train on {desync, reencode}, test on {drift, fps-convert, lip-jitter} and vice versa — manipulation families the model never saw. Fusion beats the best single signal by **+24pp / +26pp AUC** cross-family (the success bar was +3pp). Offset sensitivity, fusion trained with zero desync clips: 94% detection at 40 ms → 100% at ≥80 ms. Per-family detection: desync .995, drift 1.0, re-encode .91, fps 1.0, lip-jitter 1.0; clean false-positive rate .18.
 
-## Features (8, all CPU)
-
-- **Desync (4):** median |lag|, mean confidence, drift slope, bad-window fraction — windowed normalized cross-correlation of audio-energy vs mouth-openness envelopes.
-- **Spectral (4):** blockiness (8×8 boundary discontinuity), high-frequency DCT energy ratio, blur (Laplacian variance), noise residual.
-
-## Results (600-clip benchmark, measured)
-
-| Protocol | desync rule | spectral-only | **fusion** |
-|---|---|---|---|
-| In-family 5-fold CV (AUC) | 0.64 | 0.62 | **0.98** |
-| Cross-family A→B (AUC) | 0.59 | 0.60 | **0.84** |
-| Cross-family B→A (AUC) | 0.68 | 0.66 | **0.92** |
-
-Cross-family = train on {desync, reencode}, test on {drift, fps-convert, lip-jitter} and vice versa — manipulation families the model never saw. Fusion beats the best single signal by **+24pp and +26pp AUC** cross-family (success bar was +3pp).
-
-Offset sensitivity (fusion, trained without any desync clips): 94% detection at 40 ms → 100% at ≥80 ms.
-
-## Layout
+## How it works
 
 ```
-synsync/          source renderer, manipulations, features, fusion, CLI
-tests/            determinism + pipeline tests (pytest)
-scripts/          extract_features.py helper
+synthetic talker ──▶ feature extraction ──▶ logistic fusion ──▶ P(manipulated)
+(ffmpeg A/V; mouth      • 4 desync: lag,       8 features,
+ openness follows a      confidence, drift,    CPU-only,
+ speech-like envelope    bad-window fraction   auditable by
+ that modulates audio)  • 4 spectral: blocki-  design
+                          ness, HF-ratio,
+                          blur, noise
 ```
 
-## Limits & honesty
+The source material is a synthetic "talker": mouth openness follows a speech-like amplitude contour that also modulates the audio — strongly correlated A/V like real speech, fully deterministic per seed. Every clip ships in `manifest.jsonl` with its exact parameters. Fusion is logistic regression on handcrafted features: light and auditable by design — a triage tool, not SOTA-chasing.
 
-- Synthetic talkers, not real faces — a stepping stone, not a replacement for FaceForensics++/Celeb-DF evaluation (access forms pending).
-- Fusion is logistic regression on handcrafted features: light and auditable by design (triage tool), not SOTA-chasing.
+Limits, stated plainly: synthetic talkers, not real faces — a stepping stone, not a replacement for FaceForensics++/Celeb-DF evaluation (access forms pending).
 
 ## Citation
 
@@ -88,8 +64,6 @@ scripts/          extract_features.py helper
 }
 ```
 
-## Roadmap
-
-- [ ] FaceForensics++ / Celeb-DF cross-dataset evaluation (access pending)
-- [ ] Learned visual encoder (tiny CNN) as a third signal family
-- [ ] Real-time streaming triage mode
+---
+Built by [Habib Ur Rehman](https://github.com/habib-analyst) · ML/AI Engineer & healthcare-AI researcher ·
+[LinkedIn](https://www.linkedin.com/in/hur-dev) · [habib.top](https://habib.top)
